@@ -1768,11 +1768,8 @@ async fn run_recoverable(
 										let mut roster_bytes = 0;
 										for guild in &mut ready.guilds {
 											if guild.voice_states.is_empty() { continue; }
-											if let Event::Voice(client_core::voice::Event::Snapshot { participants: mut rows, .. }) = calls.snapshot(guild, false)? {
-												roster_bytes += rows.iter().map(client_core::voice::RosterEntry::bytes).sum::<usize>();
-												if participants.len() + rows.len() > client_core::voice::MAX_ROSTER { return Err(Failure::CapacityAt("Voice roster participant limit exceeded")); }
-												if roster_bytes > client_core::voice::MAX_ROSTER_BYTES { return Err(Failure::CapacityAt("Voice roster byte limit exceeded")); }
-												participants.append(&mut rows);
+											if let Event::Voice(client_core::voice::Event::Snapshot { participants: rows, .. }) = calls.snapshot(guild, false)? {
+												voice::fill_roster(&mut participants, &mut roster_bytes, rows);
 											}
 										}
 										let mut message_requests = Vec::new();
@@ -1863,11 +1860,8 @@ async fn run_recoverable(
 										let mut roster_bytes = 0;
 										for (index, guild) in extra.guilds.iter_mut().enumerate() {
 											if let Some(members) = extra.merged_members.get_mut(index) { guild.members.append(members); }
-											if let Event::Voice(client_core::voice::Event::Snapshot { participants: mut rows, .. }) = calls.snapshot(guild, true)? {
-												roster_bytes += rows.iter().map(client_core::voice::RosterEntry::bytes).sum::<usize>();
-												if participants.len() + rows.len() > client_core::voice::MAX_ROSTER { return Err(Failure::CapacityAt("Voice roster participant limit exceeded")); }
-												if roster_bytes > client_core::voice::MAX_ROSTER_BYTES { return Err(Failure::CapacityAt("Voice roster byte limit exceeded")); }
-												participants.append(&mut rows);
+											if let Event::Voice(client_core::voice::Event::Snapshot { participants: rows, .. }) = calls.snapshot(guild, true)? {
+												voice::fill_roster(&mut participants, &mut roster_bytes, rows);
 											}
 										}
 										if !participants.is_empty() { emit(Event::Voice(client_core::voice::Event::Snapshot { partial: true, guild: None, participants }))?; }

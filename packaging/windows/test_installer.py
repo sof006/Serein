@@ -93,6 +93,9 @@ def main():
         fixture = root / "fixture.rs"
         fixture.write_text('fn main() { if let Some(p) = std::env::args().nth(1) { std::fs::write(p, b"ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(120)); } }')
         subprocess.run(["rustc", "--edition=2024", "-O", str(fixture), "-o", str(payload / "serein.exe")], check=True)
+        # MSVC rustc writes a .pdb beside the fixture; releases ship no .pdb, and the
+        # uninstaller only removes the files Serein ships.
+        (payload / "serein.pdb").unlink(missing_ok=True)
         (payload / "LICENSE-MIT").write_text("Synthetic installer fixture")
         for name in ("install-notifications.ps1", "setup.ps1"):
             (payload / name).write_text("throw 'Installer must not run or install this optional script'")
@@ -169,9 +172,34 @@ def main():
                     raise AssertionError("Uninstall registration was not removed")
             except FileNotFoundError:
                 pass
+            # Installing into a folder that already holds the owner's files must not let
+            # uninstall delete them.
+            installed.mkdir()
+            keep = installed / "owner-notes.txt"
+            keep.write_text("not Serein's")
+            subprocess.run(f'"{setup}" /S /D={installed}', check=True, timeout=30)
+            uninstall().check_returncode()
+            wait_for(lambda: not (installed / "serein.exe").exists())
+            assert keep.read_text() == "not Serein's"
+            assert not uninstaller.exists() and not shortcut.exists()
+            keep.unlink()
+            installed.rmdir()
+            # A portable copy: data beside the executable, no registration or shortcuts.
+            portable = root / "Portable Serein"
+            subprocess.run(f'"{setup}" /S /PORTABLE /D={portable}', check=True, timeout=30)
+            assert (portable / "serein.exe").read_bytes() == (payload / "serein.exe").read_bytes()
+            assert (portable / "portable").is_file() and (portable / "data").is_dir()
+            assert (portable / "install-notifications.ps1").is_file()
+            assert not (portable / "uninstall.exe").exists() and not shortcut.exists()
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
+                                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY):
+                    raise AssertionError("A portable copy registered an uninstaller")
+            except FileNotFoundError:
+                pass
             print(json.dumps({"fixture": "synthetic/offline", "architecture": os.environ.get("PROCESSOR_ARCHITECTURE"),
                               "installer_bytes": setup.stat().st_size, "install_ms": timings,
-                              "checks": "running guard, Unicode paths, payload, shortcut target/working directory/AUMID, upgrade, uninstall"}))
+                              "checks": "running guard, Unicode paths, payload, shortcut target/working directory/AUMID, upgrade, uninstall, owner files kept, portable"}))
         finally:
             if running is not None:
                 running.terminate()

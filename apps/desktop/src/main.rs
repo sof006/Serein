@@ -5009,7 +5009,21 @@ impl Desktop {
 						self.connect(secret, switching.is_some(), ctx);
 					} else {
 						self.credential_status = credentials::loaded_status(&result);
-						if let Some(account) = switching {
+						if switching.is_some()
+							&& let Err(error) = &result
+						{
+							// The store could not be read (no keyring, busy or timed out). The entry
+							// may still exist, so keep it and report the real cause instead of
+							// claiming the login is missing (upstream issue 676).
+							self.messaging.toasts.push(
+								if *error == platform::CredentialError::NoStore {
+									ui::design::Level::Warning
+								} else {
+									ui::design::Level::Error
+								},
+								self.credential_status,
+							);
+						} else if let Some(account) = switching {
 							// The entry stays: the owner decides whether to forget it. Signing
 							// in again with "Use another account" refreshes its token, which the
 							// roster must expect again.

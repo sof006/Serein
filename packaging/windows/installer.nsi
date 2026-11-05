@@ -1,6 +1,8 @@
 ; Serein Windows Installer Script (NSIS Modern UI 2)
-; Installs per-user to $LOCALAPPDATA\Programs\Serein without elevation
-; Preserves write permissions for seamless in-app autoupdates
+; Installs per-user (default $LOCALAPPDATA\Programs\Serein, or any folder the owner picks)
+; without elevation, which keeps in-app updates writable. A portable copy writes no
+; registry keys or shortcuts and keeps its data in a "data" folder beside serein.exe.
+; Silent use: setup.exe /S [/PORTABLE] [/DESKTOP] /D=C:\path\to\folder  (/D must be last)
 
 Unicode True
 RequestExecutionLevel user
@@ -12,12 +14,23 @@ SetCompressor /SOLID lzma
 !include "x64.nsh"
 !include "Win\COM.nsh"
 !include "Win\Propkey.nsh"
+!include "nsDialogs.nsh"
 
 !define PRODUCT_NAME "Serein"
 !define PRODUCT_PUBLISHER "Serein contributors"
 !define PRODUCT_WEB_SITE "https://github.com/ViceVerse-cz/Serein"
 !define APP_EXE "serein.exe"
 !define APP_ID "cz.viceverse.serein"
+; serein.exe looks for this file beside itself to keep its data in "data" there.
+!define PORTABLE_MARKER "portable"
+!define STANDARD_DIR "$LOCALAPPDATA\Programs\Serein"
+!define PORTABLE_DIR "$DESKTOP\Serein Portable"
+
+Var Portable          ; 1 for a portable copy
+Var DesktopShortcut   ; 1 to add a desktop shortcut (standard install only)
+Var StandardRadio
+Var PortableRadio
+Var DesktopCheck
 
 !ifndef VERSION
   !define VERSION "0.1.0"
@@ -41,7 +54,7 @@ SetCompressor /SOLID lzma
 
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${OUTPUT_DIR}\serein-${VERSION}-setup.exe"
-InstallDir "$LOCALAPPDATA\Programs\Serein"
+InstallDir "${STANDARD_DIR}"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation"
 
 !if /FileExists "packaging\windows\Serein.ico"
@@ -63,6 +76,9 @@ InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRO
 ; UI Pages
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${DIST_DIR}\LICENSE-MIT"
+Page custom InstallTypePage InstallTypeLeave
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Choose the folder for ${PRODUCT_NAME}. A portable copy can be moved somewhere else later: move the whole folder."
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 
@@ -154,10 +170,119 @@ Function RegisterNotificationShortcut
   System::Store "l"
 FunctionEnd
 
+Function InstallTypePage
+  !insertmacro MUI_HEADER_TEXT "Installation type" "Choose how ${PRODUCT_NAME} is set up on this PC."
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateRadioButton} 0 0 100% 12u "&Standard install"
+  Pop $StandardRadio
+  ${NSD_CreateLabel} 12u 13u -12u 20u "Adds a Start menu shortcut and an entry in Installed Apps so it can be uninstalled normally. Your data is kept in your user profile."
+  Pop $0
+  ${NSD_CreateCheckbox} 12u 36u -12u 12u "Also create a &desktop shortcut"
+  Pop $DesktopCheck
+  ${NSD_CreateRadioButton} 0 60u 100% 12u "&Portable"
+  Pop $PortableRadio
+  ${NSD_CreateLabel} 12u 73u -12u 30u "Puts everything, including your settings and cache, in one folder you can move or copy anywhere (another drive, a USB stick). No shortcuts or registry entries; delete the folder to remove it."
+  Pop $0
+  ${NSD_CreateLabel} 0 108u 100% 20u "Saved logins stay in Windows Credential Manager in both modes, so a portable copy moved to another PC asks you to sign in again."
+  Pop $0
+  ${NSD_OnClick} $StandardRadio InstallTypeClicked
+  ${NSD_OnClick} $PortableRadio InstallTypeClicked
+  ${If} $Portable == 1
+    ${NSD_Check} $PortableRadio
+  ${Else}
+    ${NSD_Check} $StandardRadio
+  ${EndIf}
+  ${If} $DesktopShortcut == 1
+    ${NSD_Check} $DesktopCheck
+  ${EndIf}
+  Call InstallTypeChanged
+  nsDialogs::Show
+FunctionEnd
+
+Function InstallTypeClicked
+  Pop $0 ; the clicked control, pushed by NSD_OnClick
+  Call InstallTypeChanged
+FunctionEnd
+
+Function InstallTypeChanged
+  ${NSD_GetState} $PortableRadio $0
+  ${If} $0 == ${BST_CHECKED}
+    EnableWindow $DesktopCheck 0
+  ${Else}
+    EnableWindow $DesktopCheck 1
+  ${EndIf}
+FunctionEnd
+
+Function InstallTypeLeave
+  ${NSD_GetState} $PortableRadio $0
+  ${NSD_GetState} $DesktopCheck $1
+  ${If} $1 == ${BST_CHECKED}
+    StrCpy $DesktopShortcut 1
+  ${Else}
+    StrCpy $DesktopShortcut 0
+  ${EndIf}
+  ; Swap the suggested folder only while it is still the other mode's default.
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $Portable 1
+    StrCpy $DesktopShortcut 0
+    ${If} $INSTDIR == "${STANDARD_DIR}"
+      StrCpy $INSTDIR "${PORTABLE_DIR}"
+    ${EndIf}
+  ${Else}
+    StrCpy $Portable 0
+    ${If} $INSTDIR == "${PORTABLE_DIR}"
+      StrCpy $INSTDIR "${STANDARD_DIR}"
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; A drive root is never a sensible target, and a folder this user cannot write
+; (such as Program Files, without elevation) would fail halfway through copying.
+Function DirectoryLeave
+  StrLen $0 $INSTDIR
+  ${If} $0 <= 3
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Choose a folder, not the root of a drive (for example D:\Apps\Serein)."
+    Abort
+  ${EndIf}
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  FileOpen $1 "$INSTDIR\.serein-write-test" w
+  ${If} ${Errors}
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Setup cannot write to $INSTDIR.$\r$\n$\r$\nFolders such as Program Files need administrator rights. Choose a folder in your user profile or on another drive."
+    Abort
+  ${EndIf}
+  FileClose $1
+  Delete "$INSTDIR\.serein-write-test"
+FunctionEnd
+
 Function .onInit
   SetShellVarContext current
   ${If} ${RunningX64}
     SetRegView 64
+  ${EndIf}
+
+  StrCpy $Portable 0
+  StrCpy $DesktopShortcut 0
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/PORTABLE" $R1
+  ${IfNot} ${Errors}
+    StrCpy $Portable 1
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "/DESKTOP" $R1
+  ${IfNot} ${Errors}
+    StrCpy $DesktopShortcut 1
+  ${EndIf}
+  ; A silent portable install without /D= goes to the portable default, not to a previous
+  ; standard installation's folder.
+  ${If} $Portable == 1
+  ${AndIf} $INSTDIR == "${STANDARD_DIR}"
+    StrCpy $INSTDIR "${PORTABLE_DIR}"
   ${EndIf}
 
   ${Do}
@@ -188,8 +313,22 @@ Section "MainSection" SEC01
   ; Copy all package payload files
   File /r /x install-notifications.ps1 /x setup.ps1 "${DIST_DIR}\*.*"
   ; Remove legacy installer utilities when upgrading an existing installation.
-  Delete "$INSTDIR\install-notifications.ps1"
   Delete "$INSTDIR\setup.ps1"
+
+  ${If} $Portable == 1
+    ; serein.exe keeps its data in "data" beside itself while this marker exists.
+    FileOpen $0 "$INSTDIR\${PORTABLE_MARKER}" w
+    FileWrite $0 "Serein keeps its data in the data folder next to serein.exe while this file exists.$\r$\n"
+    FileClose $0
+    CreateDirectory "$INSTDIR\data"
+    ; Optional: registers a Start menu shortcut so Windows shows Serein's notifications.
+    File "${DIST_DIR}\install-notifications.ps1"
+    Return
+  ${EndIf}
+
+  ; A standard install never inherits a portable copy's marker.
+  Delete "$INSTDIR\${PORTABLE_MARKER}"
+  Delete "$INSTDIR\install-notifications.ps1"
 
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -223,6 +362,10 @@ Section "MainSection" SEC01
     MessageBox MB_OK|MB_ICONSTOP "Cannot register the ${PRODUCT_NAME} notification shortcut. You can remove the incomplete installation from Windows Installed Apps." /SD IDOK
     SetErrorLevel 2
     Abort
+  ${EndIf}
+
+  ${If} $DesktopShortcut == 1
+    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
   ${EndIf}
 SectionEnd
 
@@ -275,10 +418,22 @@ Section "Uninstall"
   Delete "$INSTDIR\install-notifications.ps1"
   Delete "$INSTDIR\setup.ps1"
   Delete "$INSTDIR\uninstall.exe"
+  Delete "$INSTDIR\${PORTABLE_MARKER}"
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\licenses"
   RMDir /r "$INSTDIR\source"
+  RMDir /r "$INSTDIR\serein.exe.WebView2"
 
-  ; Remove installation directory if empty or leftover update staging
-  RMDir /r "$INSTDIR"
+  ; Leftover in-app update staging (.serein-update.lock and .serein-update-<pid>).
+  Delete "$INSTDIR\.serein-update.lock"
+  FindFirst $0 $1 "$INSTDIR\.serein-update-*"
+  ${DoWhile} $1 != ""
+    RMDir /r "$INSTDIR\$1"
+    FindNext $0 $1
+  ${Loop}
+  FindClose $0
+
+  ; Only an empty folder is removed: the owner may have installed into a folder that also
+  ; holds their own files, and those must survive an uninstall.
+  RMDir "$INSTDIR"
 SectionEnd

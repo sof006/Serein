@@ -257,8 +257,24 @@ fn create_data_dir(root: &Path) -> Result<()> {
 }
 
 /// Shared root for local application data. Developers may select an isolated absolute path.
+/// A portable copy (a `portable` file beside the executable) keeps its data in `data` next to
+/// the executable, so the whole folder can be moved or carried on a USB drive.
 pub fn data_dir() -> std::result::Result<PathBuf, StoreError> {
-	resolve_data_dir(std::env::var_os("SEREIN_DATA_DIR"), default_data_dir())
+	resolve_data_dir(
+		std::env::var_os("SEREIN_DATA_DIR"),
+		portable_data_dir(std::env::current_exe().ok()).or_else(default_data_dir),
+	)
+}
+
+/// Name of the marker file that turns an installation folder into a portable one.
+pub const PORTABLE_MARKER: &str = "portable";
+
+fn portable_data_dir(executable: Option<PathBuf>) -> Option<PathBuf> {
+	let folder = executable?.parent()?.to_path_buf();
+	folder
+		.join(PORTABLE_MARKER)
+		.is_file()
+		.then(|| folder.join("data"))
 }
 
 /// Reject excess entries during parsing, before allocating a whole malformed array.
@@ -1705,6 +1721,20 @@ mod tests {
 			resolve_data_dir(Some(OsString::from("relative")), Some(default)),
 			Err(StoreError::Unavailable)
 		);
+	}
+
+	#[test]
+	fn portable_marker_keeps_data_beside_the_executable() {
+		let folder = std::env::temp_dir().join(format!("serein-portable-{}", std::process::id()));
+		std::fs::create_dir_all(&folder).unwrap();
+		let executable = folder.join("serein.exe");
+		assert_eq!(portable_data_dir(Some(executable.clone())), None);
+		std::fs::write(folder.join(PORTABLE_MARKER), b"").unwrap();
+		assert_eq!(
+			portable_data_dir(Some(executable)),
+			Some(folder.join("data"))
+		);
+		std::fs::remove_dir_all(&folder).unwrap();
 	}
 
 	#[cfg(feature = "development-data")]

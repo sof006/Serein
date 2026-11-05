@@ -10,6 +10,13 @@ Desktop notifications are on by default for new installs and can be turned off i
 
 ## Windows Installer & Setup
 
+The setup program asks for an installation type, then for a folder:
+
+- **Standard install**: Start menu shortcut (plus an optional desktop shortcut), an Installed Apps entry and data in `%LOCALAPPDATA%\serein`. Any writable folder can be chosen; drive roots and folders that need administrator rights (such as Program Files) are refused before copying. Uninstall removes only Serein's own files and removes the folder only when it is then empty, so files the owner keeps in the same folder survive.
+- **Portable**: copies the files and writes a `portable` marker beside `serein.exe`. While that file exists, Serein keeps its settings, cache and logs in a `data` folder next to the executable, so the whole folder can be moved to another folder, drive or USB stick. No registry entries, shortcuts or uninstaller are created; delete the folder to remove it. Saved logins still live in Windows Credential Manager, so a copy moved to another PC asks you to sign in again (or enable plaintext saved logins in Settings › Storage, which are then kept in `data`). `install-notifications.ps1` is included for optional notification registration.
+
+Silent use: `serein-<version>-setup.exe /S [/PORTABLE] [/DESKTOP] /D=C:\path\to\folder` (`/D=` must come last and is unquoted). `SEREIN_DATA_DIR` still overrides the data folder in both modes.
+
 Serein supports both portable zip extraction and a per-user Windows installer:
 - **NSIS Installer**: `packaging/windows/installer.nsi` builds `dist-installer/serein-<version>-setup.exe` via `makensis`. It installs per-user to `%LOCALAPPDATA%\Programs\Serein` (`RequestExecutionLevel user`) without requiring administrator elevation. This preserves full user write permissions for the in-app autoupdater. Setup and uninstall check running processes with native Windows Toolhelp APIs; setup writes the notification shortcut's AppUserModelID through the native COM property store. These actions do not launch PowerShell, bypass execution policy or compile C# at installation time. The setup payload excludes the optional portable PowerShell utilities and removes older copies on upgrade. Silent setup stops with code 1 if Serein is running, or code 2 if its process check or shortcut registration fails. Silent uninstall also stops when Serein is running; its normal NSIS launcher detaches a temporary uninstaller process, so the launcher exit code alone does not indicate the uninstall outcome.
 - **PowerShell Setup**: `packaging/windows/setup.ps1` provides a zero-dependency installer/uninstaller script (`powershell -File .\setup.ps1` to install, `powershell -File .\setup.ps1 -Uninstall` to remove).

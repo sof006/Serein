@@ -19,6 +19,23 @@ use zeroize::Zeroizing;
 /// Rapid mute/deafen toggles inside this window collapse into one voice state update.
 const STATE_COALESCE: Duration = Duration::from_millis(120);
 
+/// Adds one guild's login roster rows while the combined roster stays within its limits.
+/// Rows past the limits are dropped: a full voice sidebar must not fail the login.
+pub(super) fn fill_roster(
+	participants: &mut Vec<RosterEntry>,
+	bytes: &mut usize,
+	rows: Vec<RosterEntry>,
+) {
+	for row in rows {
+		let added = row.bytes();
+		if participants.len() >= voice::MAX_ROSTER || *bytes + added > voice::MAX_ROSTER_BYTES {
+			return;
+		}
+		*bytes += added;
+		participants.push(row);
+	}
+}
+
 struct StreamAttempt {
 	channel: Id,
 	request: u64,
@@ -186,10 +203,10 @@ impl Calls {
 			if self.allowed.get(&channel) != Some(&Some(guild.id)) {
 				continue;
 			}
+			// Busy servers can have more people in voice than the roster holds. Keep the ones
+			// that fit rather than failing the whole login over a sidebar list.
 			if participants.len() == voice::MAX_ROSTER {
-				return Err(Failure::CapacityAt(
-					"Voice roster participant limit exceeded",
-				));
+				break;
 			}
 			let participant = participant(&state);
 			let member = state
@@ -202,10 +219,11 @@ impl Calls {
 				participant,
 				member,
 			};
-			bytes += entry.bytes();
-			if bytes > voice::MAX_ROSTER_BYTES {
-				return Err(Failure::CapacityAt("Voice roster byte limit exceeded"));
+			let added = entry.bytes();
+			if bytes + added > voice::MAX_ROSTER_BYTES {
+				break;
 			}
+			bytes += added;
 			participants.push(entry);
 		}
 		Ok(Event::Voice(voice::Event::Snapshot {
@@ -2338,11 +2356,11 @@ mod tests {
 			guild.voice_states = (0..=voice::MAX_ROSTER)
 				.map(|_| decode(br#"{"channel_id":"20","user_id":"2"}"#).unwrap())
 				.collect();
+			// An oversized roster is trimmed instead of failing login (upstream issue 896).
 			assert!(matches!(
 				calls.snapshot(&mut guild, false),
-				Err(Failure::CapacityAt(
-					"Voice roster participant limit exceeded"
-				))
+				Ok(Event::Voice(voice::Event::Snapshot { participants, .. }))
+					if participants.len() == voice::MAX_ROSTER
 			));
 		}
 		{
